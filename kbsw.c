@@ -1,41 +1,45 @@
 // MINGW64:
-// gcc -std=c11 -Wall -Werror -mwindows -O2 -flto -o kbsw.exe kbsw.c docopt.c
-//     -DKBSW_STDOUT    enable logging to stdout (run from mintty to see it)
+// gcc -std=c11 -Wall -Werror -mwindows -O2 -flto -o kbsw.exe kbsw.c kbswhook.c docopt.c monospacebox.c
+//     -DKBSW_STDOUT -- enable logging to stdout (run from mintty to see the output)
 
-#define PROG "kbsw"
-
-// TODO: use a custom window to diplay this text instead of MessageBox
-// and get rid of the unreliable lazy formatting with spaces and tabs
+#include "version.h"
 const char kUsage [] =
 	"Usage: "PROG" [options] KEY=LAYOUT [KEY=LAYOUT...]\n"
 	"\n"
-	"where LAYOUT codes can be obtained by running\n"
-	"	"PROG" --list-layouts\n"
+	"where KEY can be one of the following:\n"
+	"    LC  LCtrl   LeftCtrl   LeftControl\n"
+	"    RC  RCtrl   RightCtrl  RightControl\n"
+	"    LS  LShift  LeftShift\n"
+	"    RS  RShift  RightShift\n"
+	"    LA  LAlt    LeftAlt\n"
+	"    RA  RAlt    RightAlt\n"
+	"    LW  LWin    LeftWin\n"
+	"    RW  RWin    RightWin\n"
 	"\n"
-	"and KEY can be one of the following:\n"
-	"	LC	LCtrl	LeftCtrl		LeftControl\n"		// VK_LCONTROL
-	"	RC	RCtrl	RightCtrl		RightControl\n"		// VK_RCONTROL
-	"	LS	LShift	LeftShift\n"						// VK_LSHIFT
-	"	RS	RShift	RightShift\n"						// VK_RSHIFT
-	"	LA	LAlt	LeftAlt\n"							// VK_LMENU
-	"	RA	RAlt	RightAlt\n"							// VK_RMENU
-	"	LW	LWin	LeftWin\n"							// VK_LWIN
-	"	RW	RWin	RightWin\n"							// VK_RWIN
+	"and LAYOUT codes can be obtained by running\n"
+	"    "PROG" --list-layouts\n"
 	"\n"
-	"-t --timeout=300	double-tap timeout, in milliseconds\n"
-	"-q --quit      	stop the running copy of "PROG"\n"
-	"-l --list-layouts	display installed keyboard layouts and exit\n"
-	"-h --help      	show this text and exit\n"
+	"-t --timeout=300   double-tap timeout, in milliseconds\n"
+	"-q --quit          stop the running copy of "PROG"\n"
+	"-p --pause         make the running instance stop doing anything\n"
+	"-r --resume        make a paused running instance resume working\n"
+	"-R --restart       stop the running instance and start a new one\n"
+	"                   with same parameters\n"
+	"-s --status        show parameters of the running instance, if any\n"
+	"-l --list-layouts  display installed keyboard layouts and exit\n"
+	"-h --help          show this text and exit\n"
 	;
 
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <assert.h>
 #include <windows.h>
 #include "docopt.h"
-#include "kbswhook.h"
 #include "common.h"
-#include "version.h"
+#include "kbswhook.h"
+#include "monospacebox.h"
+
 
 // in the order of rising precedence: e.g. if Quit and Help are both specified, Help has effect
 typedef enum
@@ -69,7 +73,7 @@ static VKEY ParseKeyName( const char* keyname )
 		{ "RW", VK_RWIN },
 	};
 
-	const char* kw = DocOptFindLineWithWord(kUsage, "\n	", keyname);
+	const char* kw = DocOptFindLineWithWord(kUsage, "\n    ", keyname);
 	if( kw == NULL )  return false;
 
 	for( unsigned i = 0; i < COUNTOF(key_names); ++i )
@@ -255,6 +259,7 @@ static LRESULT CALLBACK MainWindowProc( HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
 		case WM_DESTROY:
 			HookShutdown();
+			LOG("%p exited", hwnd);
 			break;
 
 		case UWM_ACTIVATE_LAYOUT:
@@ -266,28 +271,14 @@ static LRESULT CALLBACK MainWindowProc( HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
 // -----------------------------------------------------------------------------
 
-static bool Run( const Options* opt )
-{
-	HookConfigure(&opt->keyboard);
-
-	ghMainWindow = CreateMessageWindow(kMainWindowClassName, MainWindowProc);
-	if( ghMainWindow == NULL )
-		return false;
-
-	int rc = MessageLoop();
-
-	HookShutdown();
-	return rc == 0;
-}
-
 static HWND FindRunningInstance( void )
 {
 	return FindWindowW(kMainWindowClassName, NULL);
 }
 
-static bool StopRunningInstance( void )
+static bool StopRunningInstance( HWND hwnd_running )
 {
-	HWND running = FindRunningInstance();
+	HWND running = hwnd_running ? hwnd_running : FindRunningInstance();
 	if( running )
 	{
 		LOG("stopping %p", running);
@@ -298,6 +289,24 @@ static bool StopRunningInstance( void )
 		LOG("not running");
 	}
 	return !!running;
+}
+
+static bool Run( const Options* opt )
+{
+	HWND running = FindRunningInstance();
+
+	HookConfigure(&opt->keyboard);
+
+	ghMainWindow = CreateMessageWindow(kMainWindowClassName, MainWindowProc);
+	if( ghMainWindow == NULL )
+		return false;
+
+	StopRunningInstance(running);
+
+	int rc = MessageLoop();
+
+	HookShutdown();
+	return rc == 0;
 }
 
 
@@ -311,6 +320,14 @@ int main( int argc, char* argv[] )
 	switch( opt.command )
 	{
 		case cmdRun:
+			if( opt.keyboard.switches[0].vk == 0 )
+			{
+				MessageBoxA(NULL, "No switches specified on command line.\n"
+				                  "Nothing to do.\n\n"
+				                  "Run '"PROG" --help' for usage description.",
+				            PROG, MB_OK | MB_ICONERROR);
+				return 1;
+			}
 			if( !Run(&opt) )
 			{
 				MessageBoxA(NULL, "Something went wrong.\n"PROG" failed to start.", PROG, MB_OK | MB_ICONERROR);
@@ -319,14 +336,14 @@ int main( int argc, char* argv[] )
 			return 0;
 
 		case cmdQuit:
-			return StopRunningInstance() ? 0 : 1;
+			return StopRunningInstance(NULL) ? 0 : 1;
 
 		case cmdListLayouts:
 			PrintKeyboardlayouts();
 			return 0;
 
 		case cmdHelp:
-			MessageBoxA(NULL, kUsage, PROG" "PROG_VERSION, MB_OK | MB_ICONINFORMATION);
+			MonospaceBox(PROG" "PROG_VERSION, kUsage);
 			return 0;
 	}
 
