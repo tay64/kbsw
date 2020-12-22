@@ -40,6 +40,7 @@ const char kUsage [] =
 #include "kbswhook.h"
 #include "monospacebox.h"
 
+#define MAX_LAYOUTS  8
 
 // in the order of rising precedence: e.g. if Quit and Help are both specified, Help has effect
 typedef enum
@@ -150,6 +151,7 @@ void AppDocOptReportError( const char* arg )
 	MessageBoxA(NULL, buffer, PROG, MB_OK | MB_ICONERROR);
 }
 
+// -----------------------------------------------------------------------------
 
 int MessageLoop( void )
 {
@@ -176,28 +178,59 @@ static HWND CreateMessageWindow( LPCWSTR class_name, WNDPROC wndproc )
 	return wnd;
 }
 
+// -----------------------------------------------------------------------------
 
-static void PrintKeyboardlayouts(void) {
-	HKL kl[8];
-	int n = GetKeyboardLayoutList(COUNTOF(kl), kl);
-	LOG("active: %8x", (unsigned)(UINT_PTR)GetKeyboardLayout(GetCurrentThreadId()));
-	for( int i = 0; i < n; ++i ) {
-		char tag [KL_NAMELENGTH];
-		if( !GetKeyboardLayoutNameA(tag) )  tag[0] = 0;
+// returns a pointer to an internal buffer that gets overwritten with each call
+static const char* GetKeyboardLayoutText( HKL hkl )
+{
+	HKL active_layout = ActivateKeyboardLayout(hkl, 0);
+	if( active_layout == NULL )  return "(unknown)";
 
-		//  Layout Display Name
-		//  SHLoadIndirectString
+	char tag [KL_NAMELENGTH];
+	if( !GetKeyboardLayoutNameA(tag) )  tag[0] = 0;
 
-		WCHAR name [256], path[256];
-		DWORD namesz = sizeof(name);
-		snwprintf(path, COUNTOF(path), L"%hs\\%hs", "SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts", tag);
-		int rc = RegGetValueW(HKEY_LOCAL_MACHINE, path, L"Layout Text",
-		                      RRF_RT_REG_SZ, NULL, name, &namesz);
-		if( rc != 0 )  { name[0] = '?'; name[1] = 0; }
-		LOG("[%d]: %8x  %ls", i, (unsigned)(UINT_PTR)GetKeyboardLayout(GetCurrentThreadId()), name);
-		ActivateKeyboardLayout((HKL)HKL_NEXT, 0);
+	char path [256];
+	snprintf(path, COUNTOF(path), "%s\\%s", "SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts", tag);
+
+	static char name [256];
+	DWORD namesz = sizeof(name);
+	LSTATUS err = RegGetValueA(HKEY_LOCAL_MACHINE, path, "Layout Text", RRF_RT_REG_SZ, NULL, name, &namesz);
+	if( err != 0 )  { name[0] = '?'; name[1] = 0; }
+
+	ActivateKeyboardLayout(active_layout, 0);
+	return name;
+}
+
+static void ShowKeyboardLayouts( void )
+{
+	HKL layouts [MAX_LAYOUTS];
+	int n = GetKeyboardLayoutList(COUNTOF(layouts), layouts);
+	if( n == 0 )
+	{
+		MessageBoxA(NULL, "Failed to get keyboard layouts list", PROG, MB_OK | MB_ICONERROR);
+		return;
 	}
-	LOG("active: %8x", (unsigned)(UINT_PTR)GetKeyboardLayout(GetCurrentThreadId()));
+
+	UINT_PTR mask = 0;
+	for( int i = 0; i < n; ++i )  mask |= (UINT_PTR)layouts[i];
+
+	unsigned width = 0;
+	while( mask ) { ++width; mask >>= 4; }
+
+	char output [4096], *po = output;
+	size_t remaining_size = COUNTOF(output);
+
+	for( int i = 0; i < n; ++i )
+	{
+		int len = snprintf(po, remaining_size, "%*llx   %s\n",
+		                   width, (UINT_PTR)layouts[i],
+		                   GetKeyboardLayoutText(layouts[i]));
+		if( len < 0 )  return (void)MessageBoxA(NULL, "Formatting failed (?)", PROG, MB_OK | MB_ICONERROR);
+		po += len;
+		remaining_size -= len;
+	}
+
+	MonospaceBox(PROG, output);
 }
 
 // -----------------------------------------------------------------------------
@@ -339,7 +372,7 @@ int main( int argc, char* argv[] )
 			return StopRunningInstance(NULL) ? 0 : 1;
 
 		case cmdListLayouts:
-			PrintKeyboardlayouts();
+			ShowKeyboardLayouts();
 			return 0;
 
 		case cmdHelp:
