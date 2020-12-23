@@ -47,6 +47,7 @@ typedef enum
 {
 	cmdRun,
 	cmdListLayouts,
+	cmdShowStatus,
 	cmdQuit,
 	cmdHelp,
 } Command;
@@ -131,6 +132,7 @@ bool AppDocOptSetOption( Options* po, char opt, const char* val )
 		case 0:    return ParseNonOptionArg(po, val);
 
 		case 'l':  cmd = cmdListLayouts; break;
+		case 's':  cmd = cmdShowStatus; break;
 		case 'q':  cmd = cmdQuit; break;
 		case 'h':  cmd = cmdHelp; break;
 
@@ -295,6 +297,9 @@ static LRESULT CALLBACK MainWindowProc( HWND hwnd, UINT msg, WPARAM wParam, LPAR
 			LOG("%p exited", hwnd);
 			break;
 
+		case WM_GETTEXT:
+			return snwprintf((WCHAR*)lParam, wParam, L"%ls", GetCommandLineW());
+
 		case UWM_ACTIVATE_LAYOUT:
 			SetFocusedWindowLayout((HKL)lParam);
 			break;
@@ -334,12 +339,28 @@ static bool Run( const Options* opt )
 	if( ghMainWindow == NULL )
 		return false;
 
-	StopRunningInstance(running);
+	if( running )  StopRunningInstance(running);
 
 	int rc = MessageLoop();
 
 	HookShutdown();
 	return rc == 0;
+}
+
+
+void ShowRunningInstanceStatus( void )
+{
+	HWND running = FindRunningInstance();
+	if( running )
+	{
+		char buffer [256] = PROG" is running.\n\nCommand line:\n\n";
+		SendMessageA(running, WM_GETTEXT, COUNTOF(buffer) - strlen(buffer), (LPARAM)(buffer + strlen(buffer)));
+		MessageBoxA(NULL, buffer, PROG, MB_OK | MB_ICONINFORMATION);
+	}
+	else
+	{
+		MessageBoxA(NULL, PROG" is not running.", PROG, MB_OK | MB_ICONINFORMATION);
+	}
 }
 
 
@@ -357,7 +378,7 @@ int main( int argc, char* argv[] )
 			{
 				MessageBoxA(NULL, "No switches specified on command line.\n"
 				                  "Nothing to do.\n\n"
-				                  "Run '"PROG" --help' for usage description.",
+				                  "Run '"PROG" --help' for a brief usage description.",
 				            PROG, MB_OK | MB_ICONERROR);
 				return 1;
 			}
@@ -373,6 +394,10 @@ int main( int argc, char* argv[] )
 
 		case cmdListLayouts:
 			ShowKeyboardLayouts();
+			return 0;
+
+		case cmdShowStatus:
+			ShowRunningInstanceStatus();
 			return 0;
 
 		case cmdHelp:
