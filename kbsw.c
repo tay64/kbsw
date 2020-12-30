@@ -20,6 +20,7 @@ const char kUsage [] =
 	"    "PROG" --list-layouts\n"
 	"\n"
 	"-t --timeout=300   double-tap timeout, in milliseconds\n"
+	"-q --quiet         suppress error messages (only return error code)\n"
 	"-x --exit          stop the running copy of "PROG"\n"
 	"-p --pause         make the running instance stop doing anything\n"
 	"-r --resume        make a paused running instance resume working\n"
@@ -41,6 +42,14 @@ const char kUsage [] =
 #include "monospacebox.h"
 
 #define MAX_LAYOUTS  8
+
+static bool gQuiet = false;
+
+static void MsgBox( const char* text, UINT flag )
+{
+	if( !gQuiet )  MessageBoxA(NULL, text, PROG, MB_OK | flag);
+}
+
 
 // in the order of rising precedence: e.g. if Quit and Help are both specified, Help has effect
 typedef enum
@@ -136,6 +145,8 @@ bool AppDocOptSetOption( Options* po, char opt, const char* val )
 		case 'x':  cmd = cmdQuit; break;
 		case 'h':  cmd = cmdHelp; break;
 
+		case 'q':  gQuiet = true; break;
+
 		case 't':
 			po->keyboard.tap_timeout_ms = atoi(val);
 			break;
@@ -209,7 +220,7 @@ static void ShowKeyboardLayouts( void )
 	int n = GetKeyboardLayoutList(COUNTOF(layouts), layouts);
 	if( n == 0 )
 	{
-		MessageBoxA(NULL, "Failed to get keyboard layouts list", PROG, MB_OK | MB_ICONERROR);
+		MsgBox("Failed to get keyboard layouts list", MB_ICONERROR);
 		return;
 	}
 
@@ -227,7 +238,7 @@ static void ShowKeyboardLayouts( void )
 		int len = snprintf(po, remaining_size, "%*llx   %s\n",
 		                   width, (UINT_PTR)layouts[i],
 		                   GetKeyboardLayoutText(layouts[i]));
-		if( len < 0 )  return (void)MessageBoxA(NULL, "Formatting failed (?)", PROG, MB_OK | MB_ICONERROR);
+		if( len < 0 )  return MsgBox("Formatting failed (?)", MB_ICONERROR);
 		po += len;
 		remaining_size -= len;
 	}
@@ -348,19 +359,20 @@ static bool Run( const Options* opt )
 }
 
 
-void ShowRunningInstanceStatus( void )
+static bool ShowRunningInstanceStatus( void )
 {
 	HWND running = FindRunningInstance();
 	if( running )
 	{
 		char buffer [256] = PROG" is running.\n\nCommand line:\n\n";
 		SendMessageA(running, WM_GETTEXT, COUNTOF(buffer) - strlen(buffer), (LPARAM)(buffer + strlen(buffer)));
-		MessageBoxA(NULL, buffer, PROG, MB_OK | MB_ICONINFORMATION);
+		MsgBox(buffer, MB_ICONINFORMATION);
 	}
 	else
 	{
-		MessageBoxA(NULL, PROG" is not running.", PROG, MB_OK | MB_ICONINFORMATION);
+		MsgBox(PROG" is not running.", MB_ICONINFORMATION);
 	}
+	return running;
 }
 
 
@@ -384,7 +396,7 @@ int main( int argc, char* argv[] )
 			}
 			if( !Run(&opt) )
 			{
-				MessageBoxA(NULL, "Something went wrong.\n"PROG" failed to start.", PROG, MB_OK | MB_ICONERROR);
+				MsgBox("Something went wrong.\n"PROG" failed to start.", MB_ICONERROR);
 				return 1;
 			}
 			return 0;
@@ -397,8 +409,7 @@ int main( int argc, char* argv[] )
 			return 0;
 
 		case cmdShowStatus:
-			ShowRunningInstanceStatus();
-			return 0;
+			return ShowRunningInstanceStatus() ? 0 : 1;
 
 		case cmdHelp:
 			MonospaceBox(PROG" "PROG_VERSION, kUsage);
