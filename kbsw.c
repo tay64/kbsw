@@ -15,6 +15,9 @@ const char kUsage [] =
 	"    RA  RAlt    RightAlt\n"
 	"    LW  LWin    LeftWin\n"
 	"    RW  RWin    RightWin\n"
+	"    CL  Caps    CapsLock\n"
+	"    NL          NumLock\n"
+	"    SL          ScrollLock\n"
 	"\n"
 	"and LAYOUT codes can be obtained by running\n"
 	"    "PROG" --list-layouts\n"
@@ -82,6 +85,9 @@ static VKEY ParseKeyName( const char* keyname )
 		{ "RA", VK_RMENU },
 		{ "LW", VK_LWIN },
 		{ "RW", VK_RWIN },
+		{ "CL", VK_CAPITAL },
+		{ "NL", VK_NUMLOCK },
+		{ "SL", VK_SCROLL },
 	};
 
 	const char* kw = DocOptFindLineWithWord(kUsage, "\n    ", keyname);
