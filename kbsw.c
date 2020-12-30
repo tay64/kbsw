@@ -24,8 +24,6 @@ const char kUsage [] =
 	"-x --exit          stop the running copy of "PROG"\n"
 	"-p --pause         make the running instance stop doing anything\n"
 	"-r --resume        make a paused running instance resume working\n"
-	"-R --restart       stop the running instance and start a new one\n"
-	"                   with same parameters\n"
 	"-s --status        show parameters of the running instance, if any\n"
 	"-l --list-layouts  display installed keyboard layouts and exit\n"
 	"-h --help          show this text and exit\n"
@@ -55,6 +53,8 @@ static void MsgBox( const char* text, UINT flag )
 typedef enum
 {
 	cmdRun,
+	cmdResume,
+	cmdPause,
 	cmdListLayouts,
 	cmdShowStatus,
 	cmdQuit,
@@ -142,6 +142,8 @@ bool AppDocOptSetOption( Options* po, char opt, const char* val )
 
 		case 'l':  cmd = cmdListLayouts; break;
 		case 's':  cmd = cmdShowStatus; break;
+		case 'p':  cmd = cmdPause; break;
+		case 'r':  cmd = cmdResume; break;
 		case 'x':  cmd = cmdQuit; break;
 		case 'h':  cmd = cmdHelp; break;
 
@@ -275,6 +277,7 @@ static void SetFocusedWindowLayout( HKL new_layout )
 enum
 {
 	UWM_ACTIVATE_LAYOUT = WM_USER,
+	UWM_PAUSE_RESUME,               // wParam: false to pause, true to resume
 };
 
 static const WCHAR kMainWindowClassName [] = L"kbsw.main.6qZK6nb0dYxsgS6H4b8w";
@@ -314,6 +317,9 @@ static LRESULT CALLBACK MainWindowProc( HWND hwnd, UINT msg, WPARAM wParam, LPAR
 		case UWM_ACTIVATE_LAYOUT:
 			SetFocusedWindowLayout((HKL)lParam);
 			break;
+
+		case UWM_PAUSE_RESUME:
+			return HookPauseResume(!!wParam);
 	}
 	return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
@@ -376,6 +382,22 @@ static bool ShowRunningInstanceStatus( void )
 }
 
 
+static bool PauseResume( Command cmd )
+{
+	HWND running = FindRunningInstance();
+	if( running )
+	{
+		if( !SendMessageA(running, UWM_PAUSE_RESUME, cmd == cmdResume, 0) )
+			return MsgBox("Failed to pause/resume", MB_ICONERROR), false;
+	}
+	else
+	{
+		MsgBox(PROG" is not running.", MB_ICONINFORMATION);
+	}
+	return running;
+}
+
+
 int main( int argc, char* argv[] )
 {
 	Options opt = { .command = cmdRun };
@@ -400,6 +422,10 @@ int main( int argc, char* argv[] )
 				return 1;
 			}
 			return 0;
+
+		case cmdPause:
+		case cmdResume:
+			return PauseResume(opt.command) ? 0 : 1;
 
 		case cmdQuit:
 			return StopRunningInstance(NULL) ? 0 : 1;

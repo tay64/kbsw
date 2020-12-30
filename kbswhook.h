@@ -26,6 +26,7 @@ typedef struct
 void HookConfigure( const HookParameters* hp );
 bool HookStart( void );
 void HookShutdown( void );
+bool HookPauseResume( bool should_work );  // false to pause, true to resume
 
 // ---- should be defined by the application -----------------------------------
 

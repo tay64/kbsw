@@ -20,6 +20,7 @@
 static unsigned      gConfTapTimeout_ms;
 static VKEY          gConfVKeys [HOOK_MAX_SWITCHES];
 static HookSwitchId  gConfIds   [HOOK_MAX_SWITCHES];
+static bool          gEnabled = true;
 
 // state
 static int      gCurrentSwitch = NONE;	// index in gConfVKeys[]
@@ -109,7 +110,7 @@ static void SwitchUp( unsigned sw, DWORD timestamp_ms )
 
 static LRESULT CALLBACK LowLevelKeyboardHook( int code, WPARAM wParam, LPARAM lParam )
 {
-	if( code == HC_ACTION )
+	if( (code == HC_ACTION) && gEnabled )
 	{
 		const KBDLLHOOKSTRUCT* ev = (KBDLLHOOKSTRUCT*)lParam;
 
@@ -140,6 +141,7 @@ static LRESULT CALLBACK LowLevelKeyboardHook( int code, WPARAM wParam, LPARAM lP
 enum
 {
 	UWM_REPORT_READINESS = WM_USER,
+	UWM_PAUSE_RESUME,  // wParam: false to pause, true to resume
 };
 
 static HHOOK ghHook = NULL;
@@ -172,7 +174,13 @@ static LRESULT CALLBACK HookWindowProc( HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
 		case UWM_REPORT_READINESS:
 			SetEvent((HANDLE)lParam);
-			break;
+			return TRUE;
+
+		case UWM_PAUSE_RESUME:
+			gEnabled = !!wParam;
+			if( !gEnabled )  gCurrentSwitch = NONE;
+			LOG("pause/resume: enabled=%d", gEnabled);
+			return TRUE;
 	}
 	return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
@@ -228,4 +236,11 @@ void HookConfigure( const HookParameters* hp )
 		gConfIds[i]   = hp->switches[i].id;
 	}
 	gConfTapTimeout_ms = hp->tap_timeout_ms;
+}
+
+bool HookPauseResume( bool should_work )
+{
+	if( !ghHookWindow || !ghHook )  return false;
+	// implemented via sending a message to avoid the need to use atomics/mitex in the hook proc
+	return !!SendMessageA(ghHookWindow, UWM_PAUSE_RESUME, should_work, 0);
 }
