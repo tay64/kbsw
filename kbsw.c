@@ -20,7 +20,7 @@ const char kUsage [] =
 	"    "PROG" --list-layouts\n"
 	"\n"
 	"-t --timeout=300   double-tap timeout, in milliseconds\n"
-	"-q --quit          stop the running copy of "PROG"\n"
+	"-x --exit          stop the running copy of "PROG"\n"
 	"-p --pause         make the running instance stop doing anything\n"
 	"-r --resume        make a paused running instance resume working\n"
 	"-R --restart       stop the running instance and start a new one\n"
@@ -133,7 +133,7 @@ bool AppDocOptSetOption( Options* po, char opt, const char* val )
 
 		case 'l':  cmd = cmdListLayouts; break;
 		case 's':  cmd = cmdShowStatus; break;
-		case 'q':  cmd = cmdQuit; break;
+		case 'x':  cmd = cmdQuit; break;
 		case 'h':  cmd = cmdHelp; break;
 
 		case 't':
