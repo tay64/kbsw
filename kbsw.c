@@ -1,10 +1,10 @@
 // MINGW64:
-// gcc -std=c11 -Wall -Werror -mwindows -O2 -flto -o kbsw.exe kbsw.c kbswhook.c docopt.c monospacebox.c
+// gcc -std=c11 -Wall -Werror -mwindows -O2 -flto -o kbsw.exe kbsw.c kbswhook.c mojibake.c docopt.c monospacebox.c
 //     -DKBSW_STDOUT -- enable logging to stdout (run from mintty to see the output)
 
 #include "version.h"
 const char kUsage [] =
-	"Usage: "PROG" [options] KEY=LAYOUT [KEY=LAYOUT...]\n"
+	"Command line: "PROG" [options] KEY=LAYOUT [KEY=LAYOUT...]\n"
 	"\n"
 	"where KEY can be one of the following:\n"
 	"    LC  LCtrl   LeftCtrl   LeftControl\n"
@@ -22,7 +22,7 @@ const char kUsage [] =
 	"and LAYOUT codes can be obtained by running\n"
 	"    "PROG" --list-layouts\n"
 	"\n"
-	"-t --timeout=300   double-tap timeout, in milliseconds\n"
+	"-t --timeout=300   KEY double-press timeout, in milliseconds\n"
 	"-q --quiet         suppress error messages (only return error code)\n"
 	"-x --exit          stop the running copy of "PROG"\n"
 	"-p --pause         make the running instance stop doing anything\n"
@@ -30,6 +30,15 @@ const char kUsage [] =
 	"-s --status        show parameters of the running instance, if any\n"
 	"-l --list-layouts  display installed keyboard layouts and exit\n"
 	"-h --help          show this text and exit\n"
+	"\n"
+	"Usage:\n"
+	"\n"
+	" - Press KEY twice quickly to switch to the corresponding keyboard LAYOUT.\n"
+	"\n"
+	" - To correct some text mistakenly typed in a wrong keyboard layout,\n"
+	"   select it and press the correct layout's KEY quickly twice while\n"
+	"   holding down any other modifier key (such as Shift, Alt, Ctrl).\n"
+	"   This action overwrites the clipboard.\n"
 	;
 
 #include <stdint.h>
@@ -40,11 +49,24 @@ const char kUsage [] =
 #include "docopt.h"
 #include "common.h"
 #include "kbswhook.h"
+#include "mojibake.h"
 #include "monospacebox.h"
 
-#define MAX_LAYOUTS  8
-
 typedef struct { char str[KL_NAMELENGTH]; } KLID;
+
+
+const VKEY kModifierVKeys [] =
+{
+	VK_LSHIFT,
+	VK_LCONTROL,
+	VK_LMENU,
+	VK_LWIN,
+	VK_RSHIFT,
+	VK_RCONTROL,
+	VK_RMENU,
+	VK_RWIN,
+	0
+};
 
 
 // in the order of rising precedence: e.g. if Quit and Help are both specified, Help has effect
@@ -243,7 +265,7 @@ static const char* GetKeyboardLayoutText( const KLID* pklid )
 
 static void ShowKeyboardLayouts( void )
 {
-	HKL layouts [MAX_LAYOUTS];
+	HKL layouts [MAX_KEYBOARD_LAYOUTS];
 	int n = GetKeyboardLayoutList(COUNTOF(layouts), layouts);
 	if( n == 0 )
 	{
@@ -281,19 +303,25 @@ static void ShowKeyboardLayouts( void )
 
 // -----------------------------------------------------------------------------
 
-static void SetFocusedWindowLayout( HKL new_layout )
+static HWND SetFocusedWindowLayout( HKL new_layout, bool translate_mojibake )
 {
 	HWND target = GetForegroundWindow();
-	if( target == NULL )  return ERR("GetForegroundWindow");
+	if( target == NULL )  return ERR("GetForegroundWindow"), NULL;
 
 	DWORD fg_thread = GetWindowThreadProcessId(target, NULL);
-	if( fg_thread == 0 )  return ERR("GetWindowThreadProcessId");
+	if( fg_thread == 0 )  return ERR("GetWindowThreadProcessId"), NULL;
 
 	GUITHREADINFO gti;
 	gti.cbSize = sizeof(gti);
 	if( GetGUIThreadInfo(fg_thread, &gti) && gti.hwndFocus )  target = gti.hwndFocus;
 
+	if( translate_mojibake )
+	{
+		MojibakeTranslateSelection(target, new_layout);
+	}
+
 	PostMessage(target, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)new_layout);
+	return target;
 }
 
 // -----------------------------------------------------------------------------
@@ -304,8 +332,8 @@ enum
 	UWM_PAUSE_RESUME,               // wParam: false to pause, true to resume
 };
 
-static const WCHAR kMainWindowClassName [] = L"kbsw.main.6qZK6nb0dYxsgS6H4b8w";
-static const WCHAR kHookWindowClassName [] = L"kbsw.hook.6qZK6nb0dYxsgS6H4b8w";
+static const WCHAR kMainWindowClassName [] = L""PROG".main.6qZK6nb0dYxsgS6H4b8w";
+static const WCHAR kHookWindowClassName [] = L""PROG".hook.6qZK6nb0dYxsgS6H4b8w";
 
 static HWND ghMainWindow = NULL;
 
@@ -324,8 +352,8 @@ void AppHookNotify( unsigned idx, bool any_modifier_pressed )
 {
 	if( idx >= COUNTOF(gOptions.layouts) )  return;
 	HKL new_layout = gOptions.layouts[idx];
-	LOG("%p", new_layout);
-	PostMessage(ghMainWindow, UWM_ACTIVATE_LAYOUT, 0, (LPARAM)new_layout);
+//	LOG("%p", new_layout);
+	PostMessage(ghMainWindow, UWM_ACTIVATE_LAYOUT, any_modifier_pressed, (LPARAM)new_layout);
 }
 
 
@@ -335,19 +363,28 @@ static LRESULT CALLBACK MainWindowProc( HWND hwnd, UINT msg, WPARAM wParam, LPAR
 	{
 		case WM_CREATE:
 			if( !HookStart() )  return -1;
+			if( !AddClipboardFormatListener(hwnd) )  ERR("AddClipboardFormatListener");
 			break;
 
 		case WM_DESTROY:
 			HookShutdown();
+			RemoveClipboardFormatListener(hwnd);
 			LOG("%p exited", hwnd);
+			break;
+
+		case WM_CLIPBOARDUPDATE:
+			LOG("WM_CLIPBOARDUPDATE");
+			MojibakeOnClipboardUpdate(hwnd);
 			break;
 
 		case WM_GETTEXT:
 			return snwprintf((WCHAR*)lParam, wParam, L"%ls", GetCommandLineW());
 
 		case UWM_ACTIVATE_LAYOUT:
-			SetFocusedWindowLayout((HKL)lParam);
-			break;
+			//TODO: SHQueryUserNotificationState
+			if( MojibakeIsBusy() )  return LOG("busy"), 0;
+			SetFocusedWindowLayout((HKL)lParam, wParam);
+			return 0;
 
 		case UWM_PAUSE_RESUME:
 			return HookPauseResume(!!wParam);

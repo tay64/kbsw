@@ -29,25 +29,13 @@ static unsigned gTransitionCount;   // counts both presses and releases; odd = s
 
 // -----------------------------------------------------------------------------
 
-static const VKEY kModifierKeys [] =
-{
-	VK_LSHIFT,
-	VK_LCONTROL,
-	VK_LMENU,
-	VK_LWIN,
-	VK_RSHIFT,
-	VK_RCONTROL,
-	VK_RMENU,
-	VK_RWIN,
-};
-
 static void SwitchActivate( unsigned sw )
 {
 	bool any_modifier_pressed = false;
-	for( unsigned i = 0; i < COUNTOF(kModifierKeys); ++i )
+	for( unsigned i = 0; kModifierVKeys[i] != 0; ++i )
 	{
-		if( kModifierKeys[i] == gConfVKeys[sw] )  continue;
-		if( GetAsyncKeyState(kModifierKeys[i]) & 0x8000 )
+		if( kModifierVKeys[i] == gConfVKeys[sw] )  continue;
+		if( GetAsyncKeyState(kModifierVKeys[i]) & 0x8000 )
 		{
 			any_modifier_pressed = true;
 			break;

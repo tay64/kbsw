@@ -3,8 +3,7 @@
 
 #include <stdbool.h>
 #include <windows.h>
-
-typedef unsigned VKEY; // for VK_xxx
+#include "common.h"
 
 // ---- provided by kbswhook.c -------------------------------------------------
 

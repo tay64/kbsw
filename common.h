@@ -12,4 +12,10 @@
 
 #define COUNTOF(a)  (sizeof(a) / sizeof((a)[0]))
 
+typedef unsigned VKEY; // for VK_xxx
+
+enum { MAX_KEYBOARD_LAYOUTS = 8 };
+
+extern const VKEY kModifierVKeys []; // terminated with a 0
+
 #endif
