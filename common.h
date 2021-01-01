@@ -12,8 +12,4 @@
 
 #define COUNTOF(a)  (sizeof(a) / sizeof((a)[0]))
 
-typedef unsigned VKEY; // for VK_xxx
-
-int MessageLoop( void );
-
 #endif

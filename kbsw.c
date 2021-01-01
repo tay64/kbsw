@@ -44,12 +44,7 @@ const char kUsage [] =
 
 #define MAX_LAYOUTS  8
 
-static bool gQuiet = false;
-
-static void MsgBox( const char* text, UINT flag )
-{
-	if( !gQuiet )  MessageBoxA(NULL, text, PROG, MB_OK | flag);
-}
+typedef struct { char str[KL_NAMELENGTH]; } KLID;
 
 
 // in the order of rising precedence: e.g. if Quit and Help are both specified, Help has effect
@@ -64,11 +59,15 @@ typedef enum
 	cmdHelp,
 } Command;
 
+enum { MAX_SWITCHES = 8 };
+
 struct Options
 {
-	HookParameters keyboard;
-	HKL layouts [HOOK_MAX_SWITCHES];
-	Command command;
+	Command   command;
+	unsigned  tap_timeout_ms;
+	VKEY      keys     [MAX_SWITCHES];
+	HKL       layouts  [MAX_SWITCHES];
+	bool      quiet;
 };
 
 
@@ -102,21 +101,22 @@ static VKEY ParseKeyName( const char* keyname )
 	return 0;
 }
 
-static bool AddLayoutSwitch( Options* po, VKEY vk, HookSwitchId layout )
+// returns the new switch index, or -1 on error
+static int AddLayoutSwitchKey( Options* po, VKEY vk )
 {
-	for( unsigned i = 0; i < COUNTOF(po->keyboard.switches); ++i )
+	static_assert(COUNTOF(po->keys) == COUNTOF(po->layouts), "keys & layouts must be of same size");
+	for( unsigned i = 0; i < COUNTOF(po->keys); ++i )
 	{
-		if( po->keyboard.switches[i].vk == vk )
-			return false;  // no duplicate keys, please
+		if( po->keys[i] == vk )
+			return -1;  // no duplicate keys, please
 
-		if( po->keyboard.switches[i].vk == 0 )
+		if( po->keys[i] == 0 )
 		{
-			po->keyboard.switches[i].vk = vk;
-			po->keyboard.switches[i].id = layout;
-			return true;
+			po->keys[i] = vk;
+			return i;
 		}
 	}
-	return false; // no room left
+	return -1; // no room left
 }
 
 static bool ParseNonOptionArg( Options* po, const char* arg )
@@ -131,11 +131,27 @@ static bool ParseNonOptionArg( Options* po, const char* arg )
 	VKEY vk = ParseKeyName(keyname);
 	if( vk == 0 )  return 0;
 
-	char* eptr = NULL;
-	unsigned long layout = strtoul(eq + 1, &eptr, 16);
-	if( !eptr || *eptr != 0 )  return false;
+	// KLID is an 8-digit hex number, but it is not documented (except its length)
+	// so we do not want to rely on that beyond treating leading zeros as not significant
 
-	return AddLayoutSwitch(po, vk, (HookSwitchId)layout);
+	const char* val = eq;
+	while( *++val == '0' ); // skip the leading zeros
+
+	KLID klid;
+	unsigned len = strlen(val);
+	unsigned pad = COUNTOF(klid.str) - 1 - len;
+	if( len >= COUNTOF(klid.str) )  return false;
+	memset(klid.str, '0', pad);
+	memcpy(klid.str + pad, val, len + 1);
+
+	HKL hkl = LoadKeyboardLayoutA(klid.str, KLF_SUBSTITUTE_OK);
+	if( hkl == NULL )  return ERR("LoadKeyboardLayout"), false;
+
+	int idx = AddLayoutSwitchKey(po, vk);
+	if( idx < 0 )  return false;
+
+	po->layouts[idx] = hkl;
+	return true;
 }
 
 // opt == 0 for non-option arguments
@@ -153,10 +169,10 @@ bool AppDocOptSetOption( Options* po, char opt, const char* val )
 		case 'x':  cmd = cmdQuit; break;
 		case 'h':  cmd = cmdHelp; break;
 
-		case 'q':  gQuiet = true; break;
+		case 'q':  po->quiet = true; break;
 
 		case 't':
-			po->keyboard.tap_timeout_ms = atoi(val);
+			po->tap_timeout_ms = atoi(val);
 			break;
 
 		default: return false;
@@ -174,7 +190,10 @@ void AppDocOptReportError( const char* arg )
 
 // -----------------------------------------------------------------------------
 
-int MessageLoop( void )
+static Options gOptions;
+
+
+static int MessageLoop( void )
 {
 	MSG msg;
 	while( GetMessageW(&msg, NULL, 0,0) )
@@ -199,26 +218,26 @@ static HWND CreateMessageWindow( LPCWSTR class_name, WNDPROC wndproc )
 	return wnd;
 }
 
+static void MsgBox( const char* text, UINT flag )
+{
+	if( !gOptions.quiet )  MessageBoxA(NULL, text, PROG, MB_OK | flag);
+}
+
 // -----------------------------------------------------------------------------
 
 // returns a pointer to an internal buffer that gets overwritten with each call
-static const char* GetKeyboardLayoutText( HKL hkl )
+static const char* GetKeyboardLayoutText( const KLID* pklid )
 {
-	HKL active_layout = ActivateKeyboardLayout(hkl, 0);
-	if( active_layout == NULL )  return "(unknown)";
-
-	char tag [KL_NAMELENGTH];
-	if( !GetKeyboardLayoutNameA(tag) )  tag[0] = 0;
-
 	char path [256];
-	snprintf(path, COUNTOF(path), "%s\\%s", "SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts", tag);
+	snprintf(path, COUNTOF(path), "%s\\%s",
+	         "SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts",
+	         pklid->str);
 
 	static char name [256];
 	DWORD namesz = sizeof(name);
 	LSTATUS err = RegGetValueA(HKEY_LOCAL_MACHINE, path, "Layout Text", RRF_RT_REG_SZ, NULL, name, &namesz);
 	if( err != 0 )  { name[0] = '?'; name[1] = 0; }
 
-	ActivateKeyboardLayout(active_layout, 0);
 	return name;
 }
 
@@ -232,49 +251,48 @@ static void ShowKeyboardLayouts( void )
 		return;
 	}
 
-	UINT_PTR mask = 0;
-	for( int i = 0; i < n; ++i )  mask |= (UINT_PTR)layouts[i];
-
-	unsigned width = 0;
-	while( mask ) { ++width; mask >>= 4; }
-
 	char output [4096], *po = output;
 	size_t remaining_size = COUNTOF(output);
 
+	HKL initial_layout = GetKeyboardLayout(GetCurrentThreadId());
 	for( int i = 0; i < n; ++i )
 	{
-		int len = snprintf(po, remaining_size, "%*llx   %s\n",
-		                   width, (UINT_PTR)layouts[i],
-		                   GetKeyboardLayoutText(layouts[i]));
-		if( len < 0 )  return MsgBox("Formatting failed (?)", MB_ICONERROR);
+		KLID klid;
+		if( ActivateKeyboardLayout(layouts[i], 0) == NULL )  continue;
+		if( !GetKeyboardLayoutNameA(klid.str) ) continue;
+
+		int len = snprintf(po, remaining_size, "%*s   %s\n",
+		                   (int)(COUNTOF(klid.str) - 1), klid.str,
+		                   GetKeyboardLayoutText(&klid));
+		if( len < 0 )
+		{
+			MsgBox("Formatting failed (?)", MB_ICONERROR);
+			ActivateKeyboardLayout(initial_layout, 0);
+			return;
+		}
+
 		po += len;
 		remaining_size -= len;
 	}
+	ActivateKeyboardLayout(initial_layout, 0);
 
 	MonospaceBox(PROG, output);
 }
 
 // -----------------------------------------------------------------------------
 
-static HWND GlobalGetFocus( void )
+static void SetFocusedWindowLayout( HKL new_layout )
 {
-	HWND fg = GetForegroundWindow();
-	if( fg == NULL )  return ERR("GetForegroundWindow"), NULL;
+	HWND target = GetForegroundWindow();
+	if( target == NULL )  return ERR("GetForegroundWindow");
 
-	DWORD fg_thread = GetWindowThreadProcessId(fg, NULL);
-	if( fg_thread == 0 )  return ERR("GetWindowThreadProcessId"), NULL;
+	DWORD fg_thread = GetWindowThreadProcessId(target, NULL);
+	if( fg_thread == 0 )  return ERR("GetWindowThreadProcessId");
 
 	GUITHREADINFO gti;
 	gti.cbSize = sizeof(gti);
-	if( !GetGUIThreadInfo(fg_thread, &gti) )  return ERR("GetGUIThreadInfo"), NULL;
+	if( GetGUIThreadInfo(fg_thread, &gti) && gti.hwndFocus )  target = gti.hwndFocus;
 
-	return gti.hwndFocus;
-}
-
-static void SetFocusedWindowLayout( HKL new_layout )
-{
-	HWND target = GlobalGetFocus(); // TODO: this fails for console windows (GetGUIThreadInfo)
-	if( target == NULL )  return;
 	PostMessage(target, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)new_layout);
 }
 
@@ -297,10 +315,17 @@ HWND AppHookCreateMessageWindow( WNDPROC wndproc )
 	return CreateMessageWindow(kHookWindowClassName, wndproc);
 }
 
-void AppHookNotify( HookSwitchId layout, bool any_modifier_pressed )
+void AppHookMessageLoop( void )
 {
-//	LOG("%llx", layout);
-	PostMessage(ghMainWindow, UWM_ACTIVATE_LAYOUT, 0, (LPARAM)layout);
+	MessageLoop();
+}
+
+void AppHookNotify( unsigned idx, bool any_modifier_pressed )
+{
+	if( idx >= COUNTOF(gOptions.layouts) )  return;
+	HKL new_layout = gOptions.layouts[idx];
+	LOG("%p", new_layout);
+	PostMessage(ghMainWindow, UWM_ACTIVATE_LAYOUT, 0, (LPARAM)new_layout);
 }
 
 
@@ -356,7 +381,7 @@ static bool Run( const Options* opt )
 {
 	HWND running = FindRunningInstance();
 
-	HookConfigure(&opt->keyboard);
+	HookConfigure(opt->keys, COUNTOF(opt->keys), opt->tap_timeout_ms);
 
 	ghMainWindow = CreateMessageWindow(kMainWindowClassName, MainWindowProc);
 	if( ghMainWindow == NULL )
@@ -406,15 +431,14 @@ static bool PauseResume( Command cmd )
 
 int main( int argc, char* argv[] )
 {
-	Options opt = { .command = cmdRun };
-
-	if( !DocOptParseCommandLine(&opt, kUsage, argc, argv) && (opt.command != cmdHelp) )
+	gOptions.command = cmdRun;
+	if( !DocOptParseCommandLine(&gOptions, kUsage, argc, argv) && (gOptions.command != cmdHelp) )
 		return 1;
 
-	switch( opt.command )
+	switch( gOptions.command )
 	{
 		case cmdRun:
-			if( opt.keyboard.switches[0].vk == 0 )
+			if( gOptions.keys[0] == 0 )
 			{
 				MessageBoxA(NULL, "No switches specified on command line.\n"
 				                  "Nothing to do.\n\n"
@@ -422,7 +446,7 @@ int main( int argc, char* argv[] )
 				            PROG, MB_OK | MB_ICONERROR);
 				return 1;
 			}
-			if( !Run(&opt) )
+			if( !Run(&gOptions) )
 			{
 				MsgBox("Something went wrong.\n"PROG" failed to start.", MB_ICONERROR);
 				return 1;
@@ -431,7 +455,7 @@ int main( int argc, char* argv[] )
 
 		case cmdPause:
 		case cmdResume:
-			return PauseResume(opt.command) ? 0 : 1;
+			return PauseResume(gOptions.command) ? 0 : 1;
 
 		case cmdQuit:
 			return StopRunningInstance(NULL) ? 0 : 1;

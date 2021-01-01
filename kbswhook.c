@@ -18,8 +18,8 @@
 
 // config
 static unsigned      gConfTapTimeout_ms;
-static VKEY          gConfVKeys [HOOK_MAX_SWITCHES];
-static HookSwitchId  gConfIds   [HOOK_MAX_SWITCHES];
+static const VKEY*   gConfVKeys;
+static unsigned      gConfVKeysCount;
 static bool          gEnabled = true;
 
 // state
@@ -54,7 +54,7 @@ static void SwitchActivate( unsigned sw )
 		}
 	}
 
-	AppHookNotify(gConfIds[sw], any_modifier_pressed);
+	AppHookNotify(sw, any_modifier_pressed);
 }
 
 // -----------------------------------------------------------------------------
@@ -117,7 +117,7 @@ static LRESULT CALLBACK LowLevelKeyboardHook( int code, WPARAM wParam, LPARAM lP
 		if( (ev->flags & LLKHF_INJECTED) == 0 )
 		{
 			VKEY vk = ev->vkCode;
-			for( unsigned i = 0; i < HOOK_MAX_SWITCHES; ++i )
+			for( unsigned i = 0; i < gConfVKeysCount; ++i )
 			{
 				if( vk == gConfVKeys[i] )
 				{
@@ -179,7 +179,6 @@ static LRESULT CALLBACK HookWindowProc( HWND hwnd, UINT msg, WPARAM wParam, LPAR
 		case UWM_PAUSE_RESUME:
 			gEnabled = !!wParam;
 			if( !gEnabled )  gCurrentSwitch = NONE;
-			LOG("pause/resume: enabled=%d", gEnabled);
 			return TRUE;
 	}
 	return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -194,7 +193,7 @@ static void HookThread( void* ready_evt )
 	ghHookWindow = AppHookCreateMessageWindow(HookWindowProc);
 	if( ghHookWindow == NULL )  return;
 	PostMessageW(ghHookWindow, UWM_REPORT_READINESS, 0, (LPARAM)ready_evt);
-	MessageLoop();
+	AppHookMessageLoop();
 	HookUninstall();
 }
 
@@ -228,19 +227,16 @@ void HookShutdown( void )
 	}
 }
 
-void HookConfigure( const HookParameters* hp )
+void HookConfigure( const VKEY* vkeys, unsigned nkeys, unsigned tap_timeout_ms )
 {
-	for( unsigned i = 0; i < HOOK_MAX_SWITCHES; ++i )
-	{
-		gConfVKeys[i] = hp->switches[i].vk;
-		gConfIds[i]   = hp->switches[i].id;
-	}
-	gConfTapTimeout_ms = hp->tap_timeout_ms;
+	gConfVKeys = vkeys;
+	gConfVKeysCount = nkeys;
+	gConfTapTimeout_ms = tap_timeout_ms;
 }
 
 bool HookPauseResume( bool should_work )
 {
 	if( !ghHookWindow || !ghHook )  return false;
-	// implemented via sending a message to avoid the need to use atomics/mitex in the hook proc
+	// implemented via sending a message to avoid the need to use atomics/mutex in the hook proc
 	return !!SendMessageA(ghHookWindow, UWM_PAUSE_RESUME, should_work, 0);
 }
