@@ -22,6 +22,9 @@ const char kUsage [] =
 	"and LAYOUT codes can be obtained by running\n"
 	"    "PROG" --list-layouts\n"
 	"\n"
+	"A special dummy layout named 'HEX' can be used for Hexadecimal<->Unicode\n"
+	"conversion (see Usage below).\n"
+	"\n"
 	"You can omit '=LAYOUT' for some or all KEYs; these layouts will be assigned\n"
 	"automatically in the order they appear in --list-layouts.\n"
 	"\n"
@@ -31,7 +34,7 @@ const char kUsage [] =
 	"-x --exit          stop the running copy of "PROG"\n"
 	"-p --pause         make the running instance stop doing anything\n"
 	"-r --resume        make a paused running instance resume working\n"
-	"-s --status        show parameters of the running instance, if any\n"
+	"-s --status        show parameters of the running instance\n"
 	"-l --list-layouts  display installed keyboard layouts\n"
 	"-h --help          show this text\n"
 	"\n"
@@ -43,6 +46,13 @@ const char kUsage [] =
 	"   select it and press the correct layout's KEY quickly twice while\n"
 	"   holding down any other modifier key (such as Shift, Alt, Ctrl).\n"
 	"   This action replaces the clipboard content.\n"
+	"\n"
+	" - To convert hexadecimal Unicode codepoint(s) into character(s),\n"
+	"   for example 'U+0040' to '@', select them and double-tap a KEY\n"
+	"   assigned to the special LAYOUT named 'HEX'.\n"
+	"\n"
+	" - To do the reverse of the above, select some characters and double-tap a KEY\n"
+	"   assigned to a special LAYOUT 'HEX' while holding down any other modifier key.\n"
 	;
 
 #include <stdint.h>
@@ -86,8 +96,6 @@ typedef enum
 } Command;
 
 enum { MAX_SWITCHES = 8 };
-
-#define HKL_AUTOASSIGN ((HKL)-1)
 
 struct Options
 {
@@ -167,21 +175,28 @@ static bool ParseNonOptionArg( Options* po, const char* arg )
 
 	if( eq != NULL )
 	{
-		// KLID is an 8-digit hex number, but it is not documented (except its length)
-		// so we do not want to rely on that beyond treating leading zeros as not significant
+		if( strcmp(eq + 1, "HEX") == 0 )
+		{
+			hkl = HKL_HEX_TO_UNICODE;
+		}
+		else
+		{
+			// KLID is an 8-digit hex number, but it is not documented (except its length)
+			// so we do not want to rely on that beyond treating leading zeros as not significant
 
-		const char* val = eq;
-		while( *++val == '0' ); // skip the leading zeros
+			const char* val = eq;
+			while( *++val == '0' ); // skip the leading zeros
 
-		KLID klid;
-		unsigned len = strlen(val);
-		unsigned pad = COUNTOF(klid.str) - 1 - len;
-		if( len >= COUNTOF(klid.str) )  return false;
-		memset(klid.str, '0', pad);
-		memcpy(klid.str + pad, val, len + 1);
+			KLID klid;
+			unsigned len = strlen(val);
+			unsigned pad = COUNTOF(klid.str) - 1 - len;
+			if( len >= COUNTOF(klid.str) )  return false;
+			memset(klid.str, '0', pad);
+			memcpy(klid.str + pad, val, len + 1);
 
-		hkl = LoadKeyboardLayoutA(klid.str, KLF_SUBSTITUTE_OK);
-		if( hkl == NULL )  return ERR("LoadKeyboardLayout"), false;
+			hkl = LoadKeyboardLayoutA(klid.str, KLF_SUBSTITUTE_OK);
+			if( hkl == NULL )  return ERR("LoadKeyboardLayout"), false;
+		}
 	}
 
 	int idx = AddLayoutSwitchKey(po, vk);
@@ -332,6 +347,7 @@ static void ShowKeyboardLayouts( void )
 		po += len;
 		remaining_size -= len;
 	}
+
 	ActivateKeyboardLayout(initial_layout, 0);
 
 	MonospaceBox(PROG, output);
@@ -339,7 +355,7 @@ static void ShowKeyboardLayouts( void )
 
 // -----------------------------------------------------------------------------
 
-static HWND SetFocusedWindowLayout( HKL new_layout, bool translate_mojibake )
+static HWND SetFocusedWindowLayout( HKL new_layout, bool modifier )
 {
 	HWND target = GetForegroundWindow();
 	if( target == NULL )  return ERR("GetForegroundWindow"), NULL;
@@ -351,7 +367,14 @@ static HWND SetFocusedWindowLayout( HKL new_layout, bool translate_mojibake )
 	gti.cbSize = sizeof(gti);
 	if( GetGUIThreadInfo(fg_thread, &gti) && gti.hwndFocus )  target = gti.hwndFocus;
 
-	if( translate_mojibake )
+	// retrofitted into existing system, doesn't quite fit... a refactoring's in order?
+	if( new_layout == HKL_HEX_TO_UNICODE )
+	{
+		MojibakeTranslateSelection(target, modifier ? HKL_UNICODE_TO_HEX : HKL_HEX_TO_UNICODE);
+		return target;
+	}
+
+	if( modifier )
 	{
 		MojibakeTranslateSelection(target, new_layout);
 	}

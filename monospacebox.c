@@ -18,7 +18,7 @@ static struct
 		.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE | DS_CENTER,
 		.cdit = 1,
 		.cx = 400,
-		.cy = 400,
+		.cy = 500,
 	},
 	0,
 	0,
@@ -28,7 +28,7 @@ static struct
 		.x = 4,
 		.y = 4,
 		.cx = 392,
-		.cy = 392,
+		.cy = 492,
 		.id = 1,
 	},
 	.text_class = { 0xffff, 0x0082 }, // STATIC

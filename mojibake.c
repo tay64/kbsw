@@ -1,9 +1,11 @@
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <assert.h>
 #include <windows.h>
 #include "mojibake.h"
 #include "common.h"
+
 
 enum
 {
@@ -84,6 +86,103 @@ static SpecialHandling GetWindowSpecialHandling( HWND hwnd )
 
 // -----------------------------------------------------------------------------
 
+#define UNICODE_CODESPACE_END  0x110000
+#define UNICODE_BMP_END        0x010000
+
+
+static WCHAR* AddCharToBuffer( WCHAR ch, WCHAR* buffer, size_t* pbuffer_cch )
+{
+	if( *pbuffer_cch > 0 )
+	{
+		*buffer++ = ch;
+		*pbuffer_cch -= 1;
+	}
+	return buffer;
+}
+
+static size_t OutputSizeForHexToUnicode( size_t source_cch )
+{
+	// any U+xxxxx substring converts to a shorter sequence (1 or 2 WCHARs)
+	// worst case: no U+xxxx substrings, input is copied as is
+	return source_cch;
+}
+
+// `output_text` must be large enough to fit `output_cch` chars NOT COUNTING the null terminator
+// Finds instances of U+xxxxx in `source_text` and replaces them with corresponding
+// Unicode characters. Copies the rest as is.
+static void TranslateHexToUnicode( const WCHAR* source_text,
+                                   WCHAR* output_text, size_t output_cch )
+{
+	WCHAR ch;
+	while( (ch = *source_text++) )
+	{
+		if( (ch == L'U') && (source_text[0] == L'+') && isxdigit(source_text[1]) )
+		{
+			WCHAR* eptr;
+			unsigned long u = wcstoul(source_text + 1, &eptr, 16);
+			if( (u < UNICODE_CODESPACE_END) && !IS_LOW_SURROGATE(u) && !IS_HIGH_SURROGATE(u) )
+			{
+				LOG("U+%lx", u);
+				if( u < UNICODE_BMP_END )
+				{
+					ch = (WCHAR) u;
+				}
+				else
+				{
+					u -= UNICODE_BMP_END;
+					WCHAR high_surrogate = (WCHAR)(((u >> 10) & 0x3ff) + HIGH_SURROGATE_START);
+					WCHAR low_surrogate = (WCHAR)((u & 0x3ff) + LOW_SURROGATE_START);
+					output_text = AddCharToBuffer(high_surrogate, output_text, &output_cch);
+					ch = low_surrogate;
+				}
+				source_text = eptr;
+			}
+		}
+		output_text = AddCharToBuffer(ch, output_text, &output_cch);
+	}
+	*output_text = 0;
+}
+
+static size_t OutputSizeForUnicodeToHex( size_t source_cch )
+{
+	// character itself, plus '=U+', plus the trailing ' ', plus up to 6 digits for the codepoint
+	return source_cch * (1 + 3 + 1 + 6);
+}
+
+// `output_text` must be large enough to fit `output_cch` chars NOT COUNTING the null terminator
+// Converts each source character into 'c=U+xxxxx ', where c is the original character
+// and xxxxx is its Unicode codepoint value.
+static void TranslateUnicodeToHex( const WCHAR* source_text,
+                                   WCHAR* output_text, size_t output_cch )
+{
+	uint32_t u;
+	while( (u = *source_text++) != 0 )
+	{
+		output_text = AddCharToBuffer(u, output_text, &output_cch);
+
+		uint32_t next_ch = source_text[0];
+		if( IS_SURROGATE_PAIR(u, next_ch) )
+		{
+			u = ((u - HIGH_SURROGATE_START) << 10)
+			  + (next_ch - LOW_SURROGATE_START)
+			  + UNICODE_BMP_END;
+			output_text = AddCharToBuffer(next_ch, output_text, &output_cch);
+			++source_text;
+		}
+
+		int n = snwprintf(output_text, output_cch + 1, L"=U+%02X ", u);
+		if( n > 0 )
+		{
+			output_text += n;
+			output_cch -= n;
+		}
+		else LOG("formatting failed (u=%x)", u);
+	}
+	*output_text = 0;
+}
+
+// -----------------------------------------------------------------------------
+
 #define VKS_NO_MAPPING       -1
 #define VKS_SHIFT            0x100
 #define VKS_CTRL             0x200
@@ -121,28 +220,44 @@ static unsigned TranslateChar( WCHAR ch, WCHAR** ppout, size_t* pout_remaining_c
 	return 0;
 }
 
+// `output_text` must be large enough to fit `output_cch` chars NOT COUNTING the null terminator
+static void TranslateBuffer( const WCHAR* source_text, WCHAR* output_text, size_t output_cch,
+                             HKL source_layout, HKL target_layout )
+{
+	WCHAR ch;
+	while( (ch = *source_text++) != 0 )
+	{
+		unsigned n = TranslateChar(ch, &output_text, &output_cch, source_layout, target_layout);
+		if( n == 0 )  output_text = AddCharToBuffer(ch, output_text, &output_cch);
+	}
+	*output_text = 0;
+}
+
 static HGLOBAL TranslateString( const WCHAR* source_text, HKL source_layout, HKL target_layout )
 {
 	size_t source_cch = wcslen(source_text);
-	size_t target_cch = source_cch * 2;  // double in case target layout produces more UTF16 characters
+	size_t output_cch = (target_layout == HKL_UNICODE_TO_HEX) ? OutputSizeForUnicodeToHex(source_cch)
+	                  : (target_layout == HKL_HEX_TO_UNICODE) ? OutputSizeForHexToUnicode(source_cch)
+	                  : source_cch * 2;  // double in case target layout produces more UTF16 units
 
-	HGLOBAL hmem = GlobalAlloc(GMEM_MOVEABLE, (target_cch + 1) * sizeof(WCHAR));
+	HGLOBAL hmem = GlobalAlloc(GMEM_MOVEABLE, (output_cch + 1) * sizeof(WCHAR));
 	if( hmem == NULL )  return ERR("GlobalAlloc"), NULL;
 
 	WCHAR* output_text = (WCHAR*) GlobalLock(hmem);
 	if( output_text == NULL )  return ERR("GlobalLock"), GlobalFree(hmem), NULL;
 
-	WCHAR* dst = output_text;
-	for( size_t i = 0; i < source_cch; ++i )
+	if( target_layout == HKL_HEX_TO_UNICODE )
 	{
-		unsigned n = TranslateChar(source_text[i], &dst, &target_cch, source_layout, target_layout);
-		if( (n == 0) && (target_cch > 0) )
-		{
-			*dst++ = source_text[i];
-			--target_cch;
-		}
+		TranslateHexToUnicode(source_text, output_text, output_cch);
 	}
-	*dst = 0;
+	else if( target_layout == HKL_UNICODE_TO_HEX )
+	{
+		TranslateUnicodeToHex(source_text, output_text, output_cch);
+	}
+	else
+	{
+		TranslateBuffer(source_text, output_text, output_cch, source_layout, target_layout);
+	}
 
 	LOG("[%ls]", output_text);
 
@@ -209,7 +324,10 @@ static bool TranslateClipboard( HKL target_layout, HWND worker_hwnd )
 		goto cleanup;
 	}
 
-	HKL source_layout = DetectStringLayout(txt, target_layout);
+	HKL source_layout = ((target_layout != HKL_HEX_TO_UNICODE) && (target_layout != HKL_UNICODE_TO_HEX))
+	                  ? DetectStringLayout(txt, target_layout)
+	                  : NULL;
+
 	LOG("clip [%.60ls] %llx->%llx", txt, (UINT_PTR)source_layout, (UINT_PTR)target_layout);
 	if( source_layout == target_layout )
 	{
