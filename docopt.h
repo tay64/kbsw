@@ -32,13 +32,13 @@ bool DocOptParseCommandLine( Options* po, const char* docopt,
 
 
 // A helper for organizing keyword handling.
-// Searches `docopt`, line by line, for the occurrence of `keyword` in a space-
-// delimited context.
+// Searches `docopt`, line by line, for the occurrence of `keyword`
+// in a space-delimited context.
 // Considers only lines starting with `prefix`, which should begin with a `\n`.
 // If found, returns a pointer to the beginning of the line containing `keyword`
 // after skipping `prefix`.
 // If not found, returns NULL.
 const char* DocOptFindLineWithWord( const char* docopt, const char* prefix,
-                                    const char* keyword );
+                                    const char* keyword, size_t keyword_len );
 
 #endif

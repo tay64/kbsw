@@ -4,7 +4,7 @@
 
 #include "version.h"
 const char kUsage [] =
-	"Command line: "PROG" [options] KEY=LAYOUT [KEY=LAYOUT...]\n"
+	"Command line: "PROG" [options] KEY[=LAYOUT] [KEY[=LAYOUT]...]\n"
 	"\n"
 	"where KEY can be one of the following:\n"
 	"    LC  LCtrl   LeftCtrl   LeftControl\n"
@@ -21,6 +21,9 @@ const char kUsage [] =
 	"\n"
 	"and LAYOUT codes can be obtained by running\n"
 	"    "PROG" --list-layouts\n"
+	"\n"
+	"You can omit '=LAYOUT' for some or all KEYs; these layouts will be assigned\n"
+	"automatically in the order they appear in --list-layouts.\n"
 	"\n"
 	"-t --timeout=300   KEY double-press timeout, in milliseconds\n"
 	"-q --quiet         suppress error messages (only return error code)\n"
@@ -39,7 +42,7 @@ const char kUsage [] =
 	" - To correct some text mistakenly typed in a wrong keyboard layout,\n"
 	"   select it and press the correct layout's KEY quickly twice while\n"
 	"   holding down any other modifier key (such as Shift, Alt, Ctrl).\n"
-	"   This action overwrites the clipboard.\n"
+	"   This action replaces the clipboard content.\n"
 	;
 
 #include <stdint.h>
@@ -84,19 +87,28 @@ typedef enum
 
 enum { MAX_SWITCHES = 8 };
 
+#define HKL_AUTOASSIGN ((HKL)-1)
+
 struct Options
 {
 	Command   command;
 	unsigned  tap_timeout_ms;
 	VKEY      keys     [MAX_SWITCHES];
-	HKL       layouts  [MAX_SWITCHES];
+	HKL       layouts  [MAX_SWITCHES];    // can be HKL_AUTOASSIGN after parse
 	bool      quiet;
 	bool      ignore_fullscreen;
 };
 
+static Options gOptions;
+
+static void MsgBox( const char* text, UINT flag )
+{
+	if( !gOptions.quiet )  MessageBoxA(NULL, text, PROG, MB_OK | flag);
+}
+
 
 // returns 0 if not recognized
-static VKEY ParseKeyName( const char* keyname )
+static VKEY ParseKeyName( const char* keyname, size_t keyname_len )
 {
 	static const struct { const char* kw; VKEY vk; } key_names [] =
 	{
@@ -113,7 +125,7 @@ static VKEY ParseKeyName( const char* keyname )
 		{ "SL", VK_SCROLL },
 	};
 
-	const char* kw = DocOptFindLineWithWord(kUsage, "\n    ", keyname);
+	const char* kw = DocOptFindLineWithWord(kUsage, "\n    ", keyname, keyname_len);
 	if( kw == NULL )  return false;
 
 	for( unsigned i = 0; i < COUNTOF(key_names); ++i )
@@ -145,31 +157,32 @@ static int AddLayoutSwitchKey( Options* po, VKEY vk )
 
 static bool ParseNonOptionArg( Options* po, const char* arg )
 {
-	char keyname [24];
+	HKL hkl = HKL_AUTOASSIGN;
 
 	const char* eq = strchr(arg, '=');
-	if( (eq == NULL) || (eq - arg >= sizeof(keyname)) )  return false;
-	memcpy(keyname, arg, eq - arg);
-	keyname[eq - arg] = 0;
+	size_t keyname_len = eq ? eq - arg : strlen(arg);
 
-	VKEY vk = ParseKeyName(keyname);
-	if( vk == 0 )  return 0;
+	VKEY vk = ParseKeyName(arg, keyname_len);
+	if( vk == 0 )  return false;
 
-	// KLID is an 8-digit hex number, but it is not documented (except its length)
-	// so we do not want to rely on that beyond treating leading zeros as not significant
+	if( eq != NULL )
+	{
+		// KLID is an 8-digit hex number, but it is not documented (except its length)
+		// so we do not want to rely on that beyond treating leading zeros as not significant
 
-	const char* val = eq;
-	while( *++val == '0' ); // skip the leading zeros
+		const char* val = eq;
+		while( *++val == '0' ); // skip the leading zeros
 
-	KLID klid;
-	unsigned len = strlen(val);
-	unsigned pad = COUNTOF(klid.str) - 1 - len;
-	if( len >= COUNTOF(klid.str) )  return false;
-	memset(klid.str, '0', pad);
-	memcpy(klid.str + pad, val, len + 1);
+		KLID klid;
+		unsigned len = strlen(val);
+		unsigned pad = COUNTOF(klid.str) - 1 - len;
+		if( len >= COUNTOF(klid.str) )  return false;
+		memset(klid.str, '0', pad);
+		memcpy(klid.str + pad, val, len + 1);
 
-	HKL hkl = LoadKeyboardLayoutA(klid.str, KLF_SUBSTITUTE_OK);
-	if( hkl == NULL )  return ERR("LoadKeyboardLayout"), false;
+		hkl = LoadKeyboardLayoutA(klid.str, KLF_SUBSTITUTE_OK);
+		if( hkl == NULL )  return ERR("LoadKeyboardLayout"), false;
+	}
 
 	int idx = AddLayoutSwitchKey(po, vk);
 	if( idx < 0 )  return false;
@@ -213,10 +226,39 @@ void AppDocOptReportError( const char* arg )
 	MessageBoxA(NULL, buffer, PROG, MB_OK | MB_ICONERROR);
 }
 
+
+static int GetKeyboardLayoutListChecked( int nlayouts, HKL* layouts )
+{
+	int n = GetKeyboardLayoutList(nlayouts, layouts);
+	if( n == 0 )  MsgBox("Failed to get keyboard layouts list", MB_ICONERROR);
+	return n;
+}
+
+static bool AutoAssignLayouts( Options* po )
+{
+	HKL installed_layouts [MAX_KEYBOARD_LAYOUTS];
+	int n_installed_layouts = -1, installed_layouts_idx = 0;
+
+	for( unsigned i = 0; i < COUNTOF(po->layouts); ++i )
+	{
+		if( po->layouts[i] != HKL_AUTOASSIGN )  continue;
+
+		if( n_installed_layouts < 0 )
+		{
+			n_installed_layouts = GetKeyboardLayoutListChecked(COUNTOF(installed_layouts), installed_layouts);
+			if( n_installed_layouts <= 0 )  return false;
+		}
+
+		if( installed_layouts_idx >= n_installed_layouts )
+			return MsgBox("There are more auto-assign KEY arguments\nthan keyboard layouts installed in the system.", MB_ICONERROR), false;
+
+		po->layouts[i] = installed_layouts[installed_layouts_idx++];
+	}
+
+	return true;
+}
+
 // -----------------------------------------------------------------------------
-
-static Options gOptions;
-
 
 static int MessageLoop( void )
 {
@@ -243,11 +285,6 @@ static HWND CreateMessageWindow( LPCWSTR class_name, WNDPROC wndproc )
 	return wnd;
 }
 
-static void MsgBox( const char* text, UINT flag )
-{
-	if( !gOptions.quiet )  MessageBoxA(NULL, text, PROG, MB_OK | flag);
-}
-
 // -----------------------------------------------------------------------------
 
 // returns a pointer to an internal buffer that gets overwritten with each call
@@ -269,12 +306,8 @@ static const char* GetKeyboardLayoutText( const KLID* pklid )
 static void ShowKeyboardLayouts( void )
 {
 	HKL layouts [MAX_KEYBOARD_LAYOUTS];
-	int n = GetKeyboardLayoutList(COUNTOF(layouts), layouts);
-	if( n == 0 )
-	{
-		MsgBox("Failed to get keyboard layouts list", MB_ICONERROR);
-		return;
-	}
+	int n = GetKeyboardLayoutListChecked(COUNTOF(layouts), layouts);
+	if( n == 0 )  return;
 
 	char output [4096], *po = output;
 	size_t remaining_size = COUNTOF(output);
@@ -490,6 +523,8 @@ int main( int argc, char* argv[] )
 	gOptions.command = cmdRun;
 	gOptions.ignore_fullscreen = true;
 	if( !DocOptParseCommandLine(&gOptions, kUsage, argc, argv) && (gOptions.command != cmdHelp) )
+		return 1;
+	if( !AutoAssignLayouts(&gOptions) )
 		return 1;
 
 	switch( gOptions.command )

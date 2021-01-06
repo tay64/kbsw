@@ -106,9 +106,10 @@ bool DocOptParseCommandLine( Options* po, const char* docopt,
 	return !reported_error;
 }
 
-const char* DocOptFindLineWithWord( const char* docopt, const char* prefix, const char* keyword )
+const char* DocOptFindLineWithWord( const char* docopt, const char* prefix,
+                                    const char* keyword, size_t keyword_len )
 {
-	unsigned kwlen = strlen(keyword);
+	if( keyword_len == 0 )  return NULL;
 
 	while( !!(docopt = strstr(docopt, prefix)) )
 	{
@@ -116,13 +117,13 @@ const char* DocOptFindLineWithWord( const char* docopt, const char* prefix, cons
 
 		const char* nl = strchr(docopt, '\n');
 		unsigned line_len = nl ? nl - docopt : strlen(docopt);
-		if( line_len < kwlen )  continue;
+		if( line_len < keyword_len )  continue;
 
-		for( unsigned i = 0, e = line_len - kwlen; i <= e; ++i )
+		for( unsigned i = 0, e = line_len - keyword_len; i <= e; ++i )
 		{
 			if( isspace(*(docopt + i - 1)) &&
-			    (memcmp(docopt + i, keyword, kwlen) == 0) &&
-				isspace(docopt[i + kwlen]) )
+			    (memcmp(docopt + i, keyword, keyword_len) == 0) &&
+			    isspace(docopt[i + keyword_len]) )
 			{
 				return docopt;
 			}
