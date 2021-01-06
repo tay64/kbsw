@@ -24,12 +24,13 @@ const char kUsage [] =
 	"\n"
 	"-t --timeout=300   KEY double-press timeout, in milliseconds\n"
 	"-q --quiet         suppress error messages (only return error code)\n"
+	"-F --fullscreen    do not ignore fullscreen apps\n"
 	"-x --exit          stop the running copy of "PROG"\n"
 	"-p --pause         make the running instance stop doing anything\n"
 	"-r --resume        make a paused running instance resume working\n"
 	"-s --status        show parameters of the running instance, if any\n"
-	"-l --list-layouts  display installed keyboard layouts and exit\n"
-	"-h --help          show this text and exit\n"
+	"-l --list-layouts  display installed keyboard layouts\n"
+	"-h --help          show this text\n"
 	"\n"
 	"Usage:\n"
 	"\n"
@@ -90,6 +91,7 @@ struct Options
 	VKEY      keys     [MAX_SWITCHES];
 	HKL       layouts  [MAX_SWITCHES];
 	bool      quiet;
+	bool      ignore_fullscreen;
 };
 
 
@@ -192,6 +194,7 @@ bool AppDocOptSetOption( Options* po, char opt, const char* val )
 		case 'h':  cmd = cmdHelp; break;
 
 		case 'q':  po->quiet = true; break;
+		case 'F':  po->ignore_fullscreen = false; break;
 
 		case 't':
 			po->tap_timeout_ms = atoi(val);
@@ -357,6 +360,19 @@ void AppHookNotify( unsigned idx, bool any_modifier_pressed )
 }
 
 
+static bool IsFullscreenAppRunning( void )
+{
+	QUERY_USER_NOTIFICATION_STATE ns;
+	HRESULT hr = SHQueryUserNotificationState(&ns);
+	if( FAILED(hr) )  return LOG("SHQueryUserNotificationState error 0x%lx", hr), false;
+	LOG("%d", ns);
+
+	return (ns == QUNS_BUSY)
+	    || (ns == QUNS_RUNNING_D3D_FULL_SCREEN)
+	    || (ns == QUNS_PRESENTATION_MODE)
+	    ;
+}
+
 static LRESULT CALLBACK MainWindowProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
 {
 	switch( msg )
@@ -381,8 +397,11 @@ static LRESULT CALLBACK MainWindowProc( HWND hwnd, UINT msg, WPARAM wParam, LPAR
 			return snwprintf((WCHAR*)lParam, wParam, L"%ls", GetCommandLineW());
 
 		case UWM_ACTIVATE_LAYOUT:
-			//TODO: SHQueryUserNotificationState
-			if( MojibakeIsBusy() )  return LOG("busy"), 0;
+			// ignore the switch commands when a fullscreen app is running (likely a game)
+			if( gOptions.ignore_fullscreen && IsFullscreenAppRunning() )
+				return LOG("ignoring activation: fullscreen"), 0;
+			if( MojibakeIsBusy() )
+				return LOG("ignoring activation: busy"), 0;
 			SetFocusedWindowLayout((HKL)lParam, wParam);
 			return 0;
 
@@ -469,6 +488,7 @@ static bool PauseResume( Command cmd )
 int main( int argc, char* argv[] )
 {
 	gOptions.command = cmdRun;
+	gOptions.ignore_fullscreen = true;
 	if( !DocOptParseCommandLine(&gOptions, kUsage, argc, argv) && (gOptions.command != cmdHelp) )
 		return 1;
 
