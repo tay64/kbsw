@@ -3,14 +3,15 @@
 
 #if defined(KBSW_STDOUT)
 	#include <stdio.h>
-	#define LOG(fmt, ...) (void)(printf("%s:%d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__), fflush(stdout))
+	#define PRINT(fmt, ...)  (void)(printf(fmt, ##__VA_ARGS__), fflush(stdout))
 #else
-	#define LOG(...) ((void)0)
+	#define PRINT(fmt, ...)  ((void)0)
 #endif
 
-#define ERR(msg)  LOG("%s error %lu", msg, GetLastError())
+#define LOG(fmt, ...)    PRINT("%s:%d: "fmt"\n", __func__, __LINE__, ##__VA_ARGS__)
+#define ERR(fmt, ...)    LOG(fmt" error %lu", ##__VA_ARGS__, GetLastError())
 
-#define COUNTOF(a)  (sizeof(a) / sizeof((a)[0]))
+#define COUNTOF(a)       (sizeof(a) / sizeof((a)[0]))
 
 typedef unsigned VKEY; // for VK_xxx
 

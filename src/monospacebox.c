@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <windows.h>
 #include "monospacebox.h"
+#include "common.h"
 
 static struct
 {
@@ -109,6 +110,7 @@ static INT_PTR MonospaceBoxProc( HWND hdlg, UINT msg, WPARAM wParam, LPARAM lPar
 
 int MonospaceBox( const char* caption, const char* text )
 {
+	PRINT("%s", text);
 	struct MonospaceBoxInit p = { caption, text };
 	return DialogBoxIndirectParamW(NULL, &kMonospaceBoxDialogTemplate.header, NULL,
 	                               MonospaceBoxProc, (LPARAM)&p);
