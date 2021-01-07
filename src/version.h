@@ -1,2 +1,2 @@
 #define PROG          "kbsw"
-#define PROG_VERSION  "1.0"
+#define PROG_VERSION  "2.0"
